@@ -7,6 +7,8 @@ import com.nramosds.khipora.data.dto.NewBusinessDto
 import com.nramosds.khipora.data.dto.NewDailyClosingDto
 import com.nramosds.khipora.data.dto.NewPaymentDto
 import com.nramosds.khipora.data.dto.PaymentMethodDto
+import okhttp3.RequestBody
+import okhttp3.ResponseBody
 import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
@@ -42,7 +44,11 @@ interface SupabaseApi {
 
     @GET("rest/v1/cierres")
     suspend fun closings(
-        @Query("select") select: String = "id,negocio_id,fecha,cantidad,clientes,hora_inicio,hora_fin,publico,notas,pagos(metodo_id,monto)",
+        @Query("select") select: String =
+            "id,negocio_id,fecha,cantidad,clientes," +
+                "hora_inicio,hora_fin,publico,notas," +
+                "motivo_consumo,atributo," +
+                "pagos(metodo_id,monto)",
         @Query("negocio_id") businessId: String,
         @Query("order") order: String = "fecha.desc",
     ): List<DailyClosingDto>
@@ -64,4 +70,20 @@ interface SupabaseApi {
         @Query("id") id: String,
         @Query("select") select: String = "id",
     ): List<CreatedClosingDto>
+
+    @Headers("Prefer: return=representation")
+    @PATCH("rest/v1/cierres")
+    suspend fun updateHistoryClosing(
+        @Query("id") id: String,
+        @Query("negocio_id") businessId: String,
+        @Body body: RequestBody,
+    ): ResponseBody
+
+    @Headers("Prefer: return=representation")
+    @PATCH("rest/v1/pagos")
+    suspend fun updateHistoryPayment(
+        @Query("cierre_id") closingId: String,
+        @Query("metodo_id") methodId: String,
+        @Body body: RequestBody,
+    ): ResponseBody
 }

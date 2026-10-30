@@ -15,6 +15,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -22,6 +25,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDatePickerState
@@ -40,6 +44,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nramosds.khipora.AppContainer
 import com.nramosds.khipora.domain.model.DailyClosing
 import com.nramosds.khipora.domain.model.Payment
+import com.nramosds.khipora.domain.model.NewDailyClosing
 import com.nramosds.khipora.utils.AppTheme
 import com.nramosds.khipora.utils.components.AppCard
 import com.nramosds.khipora.utils.components.ClosingSummaryCard
@@ -57,17 +62,48 @@ fun HistoryScreen(businessId: Long, container: AppContainer) {
     val uiState by viewModel.uiState.collectAsState()
 
     LaunchedEffect(businessId) { viewModel.load(businessId) }
-    HistoryContent(uiState = uiState, onRefresh = { viewModel.load(businessId) })
+    HistoryContent(
+        businessId = businessId,
+        uiState = uiState,
+        onRefresh = { viewModel.load(businessId) },
+        onUpdate = { id, values -> viewModel.update(businessId, id, values) },
+        onDelete = { id -> viewModel.delete(businessId, id) },
+        onMutationConsumed = viewModel::consumeMutationResult,
+        onClearActionError = viewModel::clearActionError,
+    )
 }
 
 private enum class DateField { FROM, TO }
 
 @Composable
-internal fun HistoryContent(uiState: HistoryUiState, onRefresh: () -> Unit) {
+internal fun HistoryContent(
+    businessId: Long,
+    uiState: HistoryUiState,
+    onRefresh: () -> Unit,
+    onUpdate: (Long, NewDailyClosing) -> Unit,
+    onDelete: (Long) -> Unit,
+    onMutationConsumed: () -> Unit,
+    onClearActionError: () -> Unit,
+) {
     var fromDate by rememberSaveable { mutableStateOf<String?>(null) }
     var toDate by rememberSaveable { mutableStateOf<String?>(null) }
     var editingDate by remember { mutableStateOf<DateField?>(null) }
     var selectedClosingId by rememberSaveable { mutableStateOf<Long?>(null) }
+    var editingClosingId by rememberSaveable { mutableStateOf<Long?>(null) }
+    var deletingClosingId by rememberSaveable { mutableStateOf<Long?>(null) }
+
+    LaunchedEffect(uiState.mutationResult) {
+        uiState.mutationResult?.let { result ->
+            when (result.action) {
+                HistoryAction.UPDATED -> editingClosingId = null
+                HistoryAction.DELETED -> {
+                    deletingClosingId = null
+                    if (selectedClosingId == result.closingId) selectedClosingId = null
+                }
+            }
+            onMutationConsumed()
+        }
+    }
 
     val filtered = remember(uiState.closings, fromDate, toDate) {
         uiState.closings.filter { closing ->
@@ -101,6 +137,59 @@ internal fun HistoryContent(uiState: HistoryUiState, onRefresh: () -> Unit) {
             closing = closing,
             paymentMethods = uiState.paymentMethods,
             onDismiss = { selectedClosingId = null },
+        )
+    }
+
+    uiState.closings.firstOrNull { it.id == editingClosingId }?.let { closing ->
+        HistoryEditSheet(
+            closing = closing,
+            businessId = businessId,
+            paymentMethods = uiState.paymentMethods,
+            isSaving = uiState.isMutating,
+            errorMessage = uiState.actionError,
+            onDismiss = {
+                if (!uiState.isMutating) {
+                    editingClosingId = null
+                    onClearActionError()
+                }
+            },
+            onSave = { values -> onUpdate(closing.id, values) },
+        )
+    }
+
+    uiState.closings.firstOrNull { it.id == deletingClosingId }?.let { closing ->
+        AlertDialog(
+            onDismissRequest = {
+                if (!uiState.isMutating) {
+                    deletingClosingId = null
+                    onClearActionError()
+                }
+            },
+            title = { Text("¿Eliminar este cierre?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Se eliminará el cierre del ${formatDate(closing.date)}. " +
+                        "Esta acción no se puede deshacer.")
+                    uiState.actionError?.let {
+                        Text(it, color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { onDelete(closing.id) },
+                    enabled = !uiState.isMutating,
+                ) { Text(if (uiState.isMutating) "Eliminando…" else "Eliminar") }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        deletingClosingId = null
+                        onClearActionError()
+                    },
+                    enabled = !uiState.isMutating,
+                ) { Text("Cancelar") }
+            },
         )
     }
 
@@ -164,6 +253,14 @@ internal fun HistoryContent(uiState: HistoryUiState, onRefresh: () -> Unit) {
             }
         }
 
+        uiState.message?.let { message ->
+            item {
+                AppCard {
+                    Text(message, color = MaterialTheme.colorScheme.primary)
+                }
+            }
+        }
+
         if (uiState.isLoading) {
             item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
         }
@@ -195,12 +292,42 @@ internal fun HistoryContent(uiState: HistoryUiState, onRefresh: () -> Unit) {
                 }
             }
             items(filtered, key = { it.id }) { closing ->
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { selectedClosingId = closing.id }
-                ) {
-                    ClosingSummaryCard(closing = closing, showDetails = true)
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = !uiState.isMutating) {
+                                selectedClosingId = closing.id
+                            }
+                    ) {
+                        ClosingSummaryCard(closing = closing, showDetails = true)
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                    ) {
+                        OutlinedButton(
+                            enabled = !uiState.isMutating,
+                            onClick = {
+                                onClearActionError()
+                                editingClosingId = closing.id
+                            },
+                        ) {
+                            Icon(Icons.Outlined.Edit, contentDescription = null)
+                            Text(" Editar")
+                        }
+                        TextButton(
+                            enabled = !uiState.isMutating,
+                            onClick = {
+                                onClearActionError()
+                                deletingClosingId = closing.id
+                            },
+                        ) {
+                            Icon(Icons.Outlined.DeleteOutline, contentDescription = null,
+                                tint = MaterialTheme.colorScheme.error)
+                            Text(" Eliminar", color = MaterialTheme.colorScheme.error)
+                        }
+                    }
                 }
             }
         }
@@ -209,7 +336,7 @@ internal fun HistoryContent(uiState: HistoryUiState, onRefresh: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun HistoryDatePickerDialog(
+internal fun HistoryDatePickerDialog(
     date: String?,
     onDismiss: () -> Unit,
     onSelected: (String) -> Unit,
@@ -242,6 +369,7 @@ private fun isoFormatter(): SimpleDateFormat =
 private fun HistoryContentPreview() {
     AppTheme {
         HistoryContent(
+            businessId = 1,
             uiState = HistoryUiState(
                 isLoading = false,
                 closings = listOf(
@@ -259,6 +387,10 @@ private fun HistoryContentPreview() {
                 ),
             ),
             onRefresh = {},
+            onUpdate = { _, _ -> },
+            onDelete = {},
+            onMutationConsumed = {},
+            onClearActionError = {},
         )
     }
 }
